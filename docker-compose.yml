@@ -1,0 +1,25 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: common-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - ./data:/var/lib/mysql
+      - ./config/mysql.cnf:/etc/mysql/conf.d/common.cnf:ro
+    networks:
+      - common-db-network
+    healthcheck:
+      # mysqladmin ping returns success when the server is accepting connections,
+      # even when authentication is denied; no password is exposed in argv.
+      test: ["CMD", "mysqladmin", "ping", "--host=localhost", "--user=root", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  common-db-network:
+    external: true
+    name: common-db-network

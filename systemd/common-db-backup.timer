@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily common MySQL backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=common-db-backup.service
+
+[Install]
+WantedBy=timers.target

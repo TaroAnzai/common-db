@@ -1,0 +1,13 @@
+.env
+data/*
+!data/.gitkeep
+backups/daily/*
+!backups/daily/.gitkeep
+backups/weekly/*
+!backups/weekly/.gitkeep
+backups/*.log
+backups/.backup.lock
+migrations/*
+!migrations/.gitkeep
+*.tmp
+*.part

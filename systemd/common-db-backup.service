@@ -1,0 +1,7 @@
+[Unit]
+Description=Logical backup of common MySQL databases
+[Service]
+Type=oneshot
+WorkingDirectory=%h/common-db
+ExecStart=%h/common-db/scripts/backup.sh
+UMask=0077
