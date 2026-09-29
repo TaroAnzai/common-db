@@ -7,11 +7,11 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<'EOF'
-Usage: verify-db.sh --compose FILE --service NAME --source-db DB --target-db DB [options]
+Usage: verify-db.sh --compose FILE [--compose FILE ...] --service NAME --source-db DB --target-db DB [options]
 
 Compare source and common-mysql using exact row counts and object counts.
 Options:
-  --compose FILE              Source Compose file
+  --compose FILE              Source Compose file (repeatable; applied in order)
   --service NAME              Source MySQL service
   --source-db DB              Source database name
   --target-db DB              Target database name
@@ -26,11 +26,13 @@ FD options are intended for migrate-db.sh and avoid command-line secrets.
 EOF
 }
 
-compose= service= source_db= target_db= source_user= output_dir=
+COMPOSE_FILES=()
+COMPOSE_ARGS=()
+service= source_db= target_db= source_user= output_dir=
 source_fd= target_fd=
 while (($#)); do
   case $1 in
-    --compose) compose=${2:?}; shift 2;;
+    --compose) COMPOSE_FILES+=("${2:?}"); shift 2;;
     --service) service=${2:?}; shift 2;;
     --source-db) source_db=${2:?}; shift 2;;
     --target-db) target_db=${2:?}; shift 2;;
@@ -42,13 +44,19 @@ while (($#)); do
     *) die "Unknown option: $1";;
   esac
 done
-[[ -n $compose && -n $service && -n $source_db && -n $target_db ]] || { usage >&2; exit 2; }
+(( ${#COMPOSE_FILES[@]} > 0 )) && [[ -n $service && -n $source_db && -n $target_db ]] || { usage >&2; exit 2; }
 validate_name source-db "$source_db"; validate_name target-db "$target_db"
 for cmd in docker awk sort diff sed mktemp tee; do need "$cmd"; done
-[[ -f $compose ]] || die "Compose file not found: $compose"
-compose=$(cd -- "$(dirname -- "$compose")" && pwd)/$(basename -- "$compose")
-compose_dir=$(dirname -- "$compose")
-source_container=$(docker compose --project-directory "$compose_dir" -f "$compose" ps -q "$service")
+for compose_file in "${COMPOSE_FILES[@]}"; do
+  [[ -f $compose_file ]] || die "Compose file not found: $compose_file"
+done
+for i in "${!COMPOSE_FILES[@]}"; do
+  compose_file=${COMPOSE_FILES[$i]}
+  COMPOSE_FILES[$i]=$(cd -- "$(dirname -- "$compose_file")" && pwd)/$(basename -- "$compose_file")
+  COMPOSE_ARGS+=("-f" "${COMPOSE_FILES[$i]}")
+done
+compose_dir=$(dirname -- "${COMPOSE_FILES[0]}")
+source_container=$(docker compose --project-directory "$compose_dir" "${COMPOSE_ARGS[@]}" ps -q "$service")
 [[ -n $source_container ]] || die "Source service is not running: $service"
 [[ $(docker inspect --format '{{.State.Running}}' common-mysql 2>/dev/null || true) == true ]] || die "common-mysql is not running"
 

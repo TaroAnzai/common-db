@@ -9,10 +9,11 @@ source "$SCRIPT_DIR/lib.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/migrate-db.sh --compose FILE --service NAME --target-db DB [options]
+  ./scripts/migrate-db.sh --compose FILE [--compose FILE ...] --service NAME --target-db DB [options]
 
 Required:
-  --compose FILE       Existing application's docker-compose.yml
+  --compose FILE       Existing application's Compose file.
+                       May be specified multiple times; files are applied in the given order.
   --service NAME       MySQL service name in that Compose project
   --target-db DB       New database name on common-mysql
 
@@ -25,13 +26,21 @@ Options:
 
 Passwords are never accepted as command-line options. Missing source credentials
 and the new target-user password are read invisibly from the terminal.
+
+Multiple Compose files:
+  ./scripts/migrate-db.sh \
+    --compose /path/to/compose.yaml \
+    --compose /path/to/compose.production.yaml \
+    --service db --target-db example_db
 EOF
 }
 
-compose= service= source_db= source_user= target_db= target_user= assume_yes=0
+COMPOSE_FILES=()
+COMPOSE_ARGS=()
+service= source_db= source_user= target_db= target_user= assume_yes=0
 while (($#)); do
   case $1 in
-    --compose) compose=${2:?}; shift 2;;
+    --compose) COMPOSE_FILES+=("${2:?}"); shift 2;;
     --service) service=${2:?}; shift 2;;
     --source-db) source_db=${2:?}; shift 2;;
     --source-user) source_user=${2:?}; shift 2;;
@@ -42,27 +51,34 @@ while (($#)); do
     *) die "Unknown option: $1";;
   esac
 done
-[[ -n $compose && -n $service && -n $target_db ]] || { usage >&2; exit 2; }
+(( ${#COMPOSE_FILES[@]} > 0 )) && [[ -n $service && -n $target_db ]] || { usage >&2; exit 2; }
 [[ -n $target_user ]] || target_user=$target_db
 validate_name target-db "$target_db"; validate_name target-user "$target_user"
 (( ${#target_db} <= 64 )) || die "target-db exceeds MySQL's 64-character limit"
 (( ${#target_user} <= 32 )) || die "target-user exceeds MySQL's 32-character limit"
 [[ -z $source_db ]] || validate_name source-db "$source_db"
 
+for compose_file in "${COMPOSE_FILES[@]}"; do
+  [[ -f $compose_file ]] || die "Compose file not found: $compose_file"
+done
+for i in "${!COMPOSE_FILES[@]}"; do
+  compose_file=${COMPOSE_FILES[$i]}
+  COMPOSE_FILES[$i]=$(cd -- "$(dirname -- "$compose_file")" && pwd)/$(basename -- "$compose_file")
+  COMPOSE_ARGS+=("-f" "${COMPOSE_FILES[$i]}")
+done
+compose_dir=$(dirname -- "${COMPOSE_FILES[0]}")
+
 for cmd in docker gzip date tee awk sed sort diff mktemp grep; do need "$cmd"; done
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
-[[ -f $compose ]] || die "Compose file not found: $compose"
-compose=$(cd -- "$(dirname -- "$compose")" && pwd)/$(basename -- "$compose")
-compose_dir=$(dirname -- "$compose")
 
 docker inspect common-mysql >/dev/null 2>&1 || die "common-mysql does not exist; start it first"
 [[ $(docker inspect --format '{{.State.Running}}' common-mysql) == true ]] || die "common-mysql is not running"
 health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' common-mysql)
 [[ $health == healthy ]] || die "common-mysql is not healthy (status: $health)"
 
-docker compose --project-directory "$compose_dir" -f "$compose" config --services | grep -Fx -- "$service" >/dev/null ||
-  die "Service '$service' is not defined in $compose"
-source_container=$(docker compose --project-directory "$compose_dir" -f "$compose" ps -q "$service")
+docker compose --project-directory "$compose_dir" "${COMPOSE_ARGS[@]}" config --services | grep -Fx -- "$service" >/dev/null ||
+  die "Service '$service' is not defined in the specified Compose files"
+source_container=$(docker compose --project-directory "$compose_dir" "${COMPOSE_ARGS[@]}" ps -q "$service")
 [[ -n $source_container ]] || die "Source service '$service' is not running"
 [[ $(docker inspect --format '{{.State.Running}}' "$source_container") == true ]] || die "Source container is not running"
 
@@ -105,7 +121,7 @@ read_secret 'Confirm password: ' target_password_confirm
 unset target_password_confirm
 
 printf 'Migration plan:\n  source: %s (%s), service=%s, database=%s, user=%s\n  target: common-mysql, database=%s, user=%s@%%\n' \
-  "$compose" "$source_container" "$service" "$source_db" "$source_user" "$target_db" "$target_user"
+  "${COMPOSE_FILES[*]}" "$source_container" "$service" "$source_db" "$source_user" "$target_db" "$target_user"
 if ((!assume_yes)); then
   read -r -p 'Proceed with dump and migration? [y/N] ' answer </dev/tty
   [[ $answer == y || $answer == Y ]] || die "Cancelled; no target resource was created"
@@ -142,7 +158,7 @@ source_version=$(printf '%s\n' "$source_password" | container_mysql "$source_con
 source_tables=$(printf '%s\n' "$source_password" | container_mysql "$source_container" -u "$source_user" -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$(sql_literal "$source_db")' AND TABLE_TYPE='BASE TABLE'")
 {
   printf 'captured_at=%s\ncompose=%s\nservice=%s\ncontainer=%s\nmysql_version=%s\ndatabase=%s\nuser=%s\nbase_tables=%s\n' \
-    "$(date --iso-8601=seconds)" "$compose" "$service" "$source_container" "$source_version" "$source_db" "$source_user" "$source_tables"
+    "$(date --iso-8601=seconds)" "${COMPOSE_FILES[*]}" "$service" "$source_container" "$source_version" "$source_db" "$source_user" "$source_tables"
 } >"$migration_dir/source-summary.txt"
 
 dump_part="$migration_dir/dump.sql.gz.part"
@@ -181,7 +197,9 @@ log "Import completed"
 
 exec 3<<<"$source_password"
 exec 4<<<"$common_root_password"
-if "$SCRIPT_DIR/verify-db.sh" --compose "$compose" --service "$service" --source-db "$source_db" \
+verify_compose_args=()
+for compose_file in "${COMPOSE_FILES[@]}"; do verify_compose_args+=(--compose "$compose_file"); done
+if "$SCRIPT_DIR/verify-db.sh" "${verify_compose_args[@]}" --service "$service" --source-db "$source_db" \
   --target-db "$target_db" --source-user "$source_user" --output-dir "$migration_dir" \
   --source-password-fd 3 --target-password-fd 4; then
   verification=PASSED

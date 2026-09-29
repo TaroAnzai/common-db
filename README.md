@@ -81,13 +81,26 @@ cd ~/common-db
   --target-user task_progress
 ```
 
-Composeファイルを絶対パスへ正規化し、そのディレクトリをproject directoryとして `docker compose config` / `docker compose ps` を実行します。このため同じディレクトリの `.env`、`env_file`、`${VARIABLE}` はComposeの通常ルールで解決されます。接続値は解決済みコンテナ環境の `MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` から取得します。取得不能な値は推測せず、DB名は通常入力、passwordは非表示入力で求めます。
+複数のComposeファイルで本番設定をoverrideしている場合は、適用順に `--compose` を繰り返します。例えばtask-progressでは次のように実行します。
+
+```bash
+./scripts/migrate-db.sh \
+  --compose ~/task-progress-docker/compose.yaml \
+  --compose ~/task-progress-docker/compose.production.yaml \
+  --service db \
+  --source-db progress_db \
+  --source-user progress_user \
+  --target-db progress_db \
+  --target-user progress_user
+```
+
+Composeファイルを絶対パスへ正規化し、先頭のComposeファイルのディレクトリをproject directoryとして `docker compose config` / `docker compose ps` を実行します。複数指定時は記載順に `-f` へ渡すため、後のファイルによるCompose標準のoverrideが有効です。このため同じディレクトリの `.env`、`env_file`、`${VARIABLE}` はComposeの通常ルールで解決されます。接続値は解決済みコンテナ環境の `MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` から取得します。取得不能な値は推測せず、DB名は通常入力、passwordは非表示入力で求めます。
 
 全オプション:
 
 | オプション | 内容 |
 |---|---|
-| `--compose FILE` | 必須。移行元Composeファイル |
+| `--compose FILE` | 必須。移行元Composeファイル。複数回指定でき、指定順に適用 |
 | `--service NAME` | 必須。移行元MySQL service名 |
 | `--target-db DB` | 必須。新規作成する移行先DB |
 | `--source-db DB` | 移行元DB。省略時は `MYSQL_DATABASE`、なければ対話入力 |
